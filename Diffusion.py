@@ -34,11 +34,16 @@ print(imgs.shape == (batch, 3, 64, 64))
 
 # beta_schedule to define variables for the math to come
 
-def make_betas_schedule(T, device=None):
-    betas = torch.linspace(1e-4, 2e-2, T, device=device)
-    alphas = 1.0 - betas
-    alphas_cumprod = torch.cumprod(alphas, dim=0)
-    return betas, alphas, alphas_cumprod
+def make_betas_schedule_cosine(T, s=0.008, device=None, eps=1e-5): # changed: switched to cosine schedule
+    # ᾱ(t) = cos^2(((t/T)+s)/(1+s) * π/2)
+    steps = torch.arange(T+1, device=device, dtype=torch.float32)
+    t = steps / T
+    alphas_cumprod = torch.cos(((t + s) / (1 + s)) * torch.pi * 0.5) ** 2
+    alphas_cumprod = alphas_cumprod / alphas_cumprod[0]  # normalize to 1 at t=0
+    # convert ᾱ -> β_t
+    alphas = alphas_cumprod[1:] / (alphas_cumprod[:-1] + eps)
+    betas = (1 - alphas).clamp(1e-8, 0.999)
+    return betas, alphas, alphas_cumprod[1:]
 
 # compute for xt and noise from the formula !!! remember formula 
 def q_sample(x0, t, alphas_cumprod):
@@ -340,7 +345,7 @@ class EMA:
 # Total number of diffusion steps
 T = 1000
 # Schedules
-betas, alphas, alphas_cumprod = make_betas_schedule(T, device=device)
+betas, alphas, alphas_cumprod = make_betas_schedule_cosine(T, device=device)
 
 # buffers
 sqrt_alphas      = torch.sqrt(alphas)
@@ -412,7 +417,7 @@ for epoch in range(1, epochs+1):
         if global_step % log_every == 0:
             print(f"epoch {epoch} step {global_step}  loss {loss.item():.4f}")
         global_step += 1
-    if (epoch+1) % 5 == 0:
+    if (epoch+1) % 2 == 0:
         # save a checkpoint per epoch
         ckpt = {
             "net": net.state_dict(),
