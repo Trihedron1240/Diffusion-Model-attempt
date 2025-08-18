@@ -386,7 +386,6 @@ def ddpm_sample(model, shape, T, betas, alphas, alphas_cumprod, device):
         # integer timesteps (as in your current time_embed)
         t = torch.full((N,), t_int, device=device, dtype=torch.long)
         v_pred = model(x_t, t) 
-        eps_pred = model(x_t, t)
         eps_pred = v_to_eps(v_pred, x_t, t, alphas, alphas_cumprod)
         a_t   = alphas[t_int]
         a_bar = alphas_cumprod[t_int]
