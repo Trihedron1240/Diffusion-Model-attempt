@@ -303,16 +303,23 @@ mse = nn.MSELoss()
 def _rand_t(batch_size, T, device):
     return torch.randint(0, T, (batch_size,), device=device, dtype=torch.long)
 
-def diffusion_loss(model, x0, T, alphas_cumprod):
+def diffusion_loss_vpred(model, x0, T, alphas, alphas_cumprod):
     N = x0.size(0)
-    t = _rand_t(N, T, x0.device)                  # [N]
-    # q_sample (your function): x_t and ε
-    x_t, eps = q_sample(x0, t, alphas_cumprod)    # both [N, C, H, W]
+    t = _rand_t(N, T, x0.device)
+    x_t, eps = q_sample(x0, t, alphas_cumprod)  # returns x_t, ε
 
-    # model predicts ε̂(x_t, t)
-    eps_pred = model(x_t, t)                      # [N, C, H, W]
-    return mse(eps_pred, eps)
+    a_t = alphas[t].view(-1,1,1,1)
+    a_bar = alphas_cumprod[t].view(-1,1,1,1)
+    # v target
+    v_target = a_t.sqrt() * eps - (1.0 - a_bar).sqrt() * x0
 
+    v_pred = model(x_t, t)
+    return mse(v_pred, v_target)
+def v_to_eps(v_pred, x_t, t, alphas, alphas_cumprod):
+    a_t = alphas[t].view(-1,1,1,1)
+    a_bar = alphas_cumprod[t].view(-1,1,1,1)
+    # ε̂ = (v̂ + sqrt(1−ᾱ)*x_t) / sqrt(α_t)
+    return (v_pred + (1.0 - a_bar).sqrt() * x_t) / a_t.sqrt()
 class EMA:
     def __init__(self, model, decay=0.999):
         self.decay = decay
@@ -378,9 +385,9 @@ def ddpm_sample(model, shape, T, betas, alphas, alphas_cumprod, device):
     for t_int in reversed(range(T)):
         # integer timesteps (as in your current time_embed)
         t = torch.full((N,), t_int, device=device, dtype=torch.long)
-
+        v_pred = model(x_t, t) 
         eps_pred = model(x_t, t)
-
+        eps_pred = v_to_eps(v_pred, x_t, t, alphas, alphas_cumprod)
         a_t   = alphas[t_int]
         a_bar = alphas_cumprod[t_int]
         a_bar_prev = alphas_cumprod_prev[t_int]
@@ -402,7 +409,7 @@ for epoch in range(1, epochs+1):
 
         optimizer.zero_grad(set_to_none=True)
         with amp.autocast('cuda', enabled=(device.type == "cuda")):
-            loss = diffusion_loss(net, x0, T, alphas_cumprod)
+            loss = diffusion_loss_vpred(net, x0, T, alphas_cumprod)
 
         scaler.scale(loss).backward()
 
@@ -417,8 +424,8 @@ for epoch in range(1, epochs+1):
         if global_step % log_every == 0:
             print(f"epoch {epoch} step {global_step}  loss {loss.item():.4f}")
         global_step += 1
-    if (epoch+1) % 2 == 0:
-        # save a checkpoint per epoch
+    if (epoch+1) % 1 == 0:
+        # save a checkpoint per  x epochs
         ckpt = {
             "net": net.state_dict(),
             "ema": ema.shadow,
