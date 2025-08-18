@@ -408,7 +408,7 @@ for epoch in range(1, epochs+1):
 
         optimizer.zero_grad(set_to_none=True)
         with amp.autocast('cuda', enabled=(device.type == "cuda")):
-            loss = diffusion_loss_vpred(net, x0, T, alphas_cumprod)
+            loss = diffusion_loss_vpred(net, x0, T, alphas, alphas_cumprod)
 
         scaler.scale(loss).backward()
 
