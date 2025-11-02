@@ -279,10 +279,9 @@ class UNet(nn.Module):
         self.mid = BottleneckBlock(channels=base*8, temb_dim=temb_dim, use_attention=True)
 
         # Decoder
-        self.up3 = UpsampleBlock(in_channels=base*8, skip_channels=base*8, out_channels=base*4,   temb_dim=temb_dim, use_attention=True)
         self.up2 = UpsampleBlock(in_channels=base*4, skip_channels=base*4, out_channels=base*4,   temb_dim=temb_dim, use_attention=True)
         self.up1 = UpsampleBlock(in_channels=base*4, skip_channels=base*2, out_channels=base*2,   temb_dim=temb_dim, use_attention=True)
-        self.up0 = UpsampleBlock(in_channels=base*2,   skip_channels=base,   out_channels=base,   temb_dim=temb_dim, use_attention=False)
+        self.up0 = UpsampleBlock(in_channels=base*2, skip_channels=base*2, out_channels=base, temb_dim=temb_dim, use_attention=False)
 
         # Output head
         self.out = OutHead(base, out_ch)
@@ -291,18 +290,17 @@ class UNet(nn.Module):
         
         temb = self.time_mlp(t)  
         x = self.stem(x)
-        x_stem = x
         x, s0 = self.down0(x, temb)   # x: H/2
         x, s1 = self.down1(x, temb)   # x: H/4
-        x, s2 = self.down2(x, temb)   # x: H/8
-        x, s3 = self.down3(x, temb)   # x: H/8
+        x, s2 = self.down2(x, temb)
+        x, _  = self.down3(x, temb)   # H/8   # x: H/8 _ is not needed, just x
         x = self.mid(x, temb)           # H/8
         x = self.up2(x, s2, temb)       # H/4
         x = self.up1(x, s1, temb)       # H/2
         x = self.up0(x, s0, temb)       # H
-        out = self.out(x)    # -> base
+        out = self.out(x)
 
-        return self.out(x) 
+        return out
 mse = nn.MSELoss()
 
 @torch.no_grad()
