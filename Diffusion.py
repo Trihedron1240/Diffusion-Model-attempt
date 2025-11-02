@@ -113,38 +113,20 @@ class ResBlock(nn.Module):
 
 #
 class DownsampleBlock(nn.Module):
-    def __init__(self, in_channels=3, out_channels=64, temb_dim=256,
-                 use_conv_down=True, is_last=False, num_res_blocks=2, group_num=32):
+    def __init__(self, in_ch, out_ch, temb_dim, is_last=False):
         super().__init__()
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.temb_dim = temb_dim
-        self.is_last = is_last
-        self.next_channels = 2 * out_channels
-
-        blocks = [ResBlock(in_channels, out_channels, temb_dim, group_num)]
-        if num_res_blocks >= 2:
-            blocks.append(ResBlock(out_channels, out_channels, temb_dim, group_num))
-        self.blocks = nn.ModuleList(blocks)
-
-        if not is_last:
-            if use_conv_down:
-                self.down = nn.Conv2d(out_channels, self.next_channels, kernel_size=3, stride=2, padding=1)
-            else:
-                self.down = nn.Sequential(
-                    nn.AvgPool2d(2, 2),
-                    nn.Conv2d(out_channels, self.next_channels, kernel_size=1)
-                )
-        else:
-            self.down = nn.Identity()
+        self.blocks = nn.ModuleList([
+            ResBlock(in_ch,  out_ch, temb_dim),   # in_ch -> out_ch
+            ResBlock(out_ch, out_ch, temb_dim),   # stay at out_ch
+        ])
+        self.down = nn.Identity() if is_last else nn.Conv2d(out_ch, out_ch, 3, stride=2, padding=1)
 
     def forward(self, x, temb):
-        for block in self.blocks:
-            x = block(x, temb)
-        skip = x
-        x = self.down(x)
+        for b in self.blocks:
+            x = b(x, temb)           # now x has out_ch channels
+        skip = x                      # skip also out_ch
+        x = self.down(x)              # spatial ↓2 unless last
         return x, skip
-
 
 # SelfAttention2d
 class AttentionBlock(nn.Module):
@@ -273,15 +255,15 @@ class UNet(nn.Module):
         self.down0 = DownsampleBlock(base,     base*2, temb_dim, is_last=False)  # H -> H/2
         self.down1 = DownsampleBlock(base*2,   base*4, temb_dim, is_last=False)  # H/2 -> H/4
         self.down2 = DownsampleBlock(base*4,   base*8, temb_dim, is_last=False)  # H/4 -> H/8
-        self.down3 = DownsampleBlock(base*8,   base*8, temb_dim, is_last=True)   # keep H/8, deepen features
+        self.down3 = DownsampleBlock(base*8,   base*8, temb_dim, is_last=True)   # keep H/8
 
         # Bottleneck
         self.mid = BottleneckBlock(channels=base*8, temb_dim=temb_dim, use_attention=True)
 
         # Decoder
-        self.up2 = UpsampleBlock(in_channels=base*4, skip_channels=base*4, out_channels=base*4,   temb_dim=temb_dim, use_attention=True)
-        self.up1 = UpsampleBlock(in_channels=base*4, skip_channels=base*2, out_channels=base*2,   temb_dim=temb_dim, use_attention=True)
-        self.up0 = UpsampleBlock(in_channels=base*2, skip_channels=base*2, out_channels=base, temb_dim=temb_dim, use_attention=False)
+        self.up2 = UpsampleBlock(in_channels=base*8, skip_channels=base*8, out_channels=base*4, temb_dim=temb_dim, use_attention=True)
+        self.up1 = UpsampleBlock(in_channels=base*4, skip_channels=base*4, out_channels=base*2, temb_dim=temb_dim, use_attention=True)
+        self.up0 = UpsampleBlock(in_channels=base*2, skip_channels=base*2, out_channels=base,   temb_dim=temb_dim, use_attention=False)
 
         # Output head
         self.out = OutHead(base, out_ch)
