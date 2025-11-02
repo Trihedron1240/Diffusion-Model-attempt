@@ -15,7 +15,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 # Transform and dataset
 transform = transforms.Compose([transforms.Resize(70), transforms.CenterCrop(64), transforms.ToTensor(), transforms.Normalize([0.5]*3, [0.5]*3)])
-celeba_root = "/kaggle/input/images"
+celeba_root = "/kaggle/input/celeba-dataset"
 dataset = datasets.ImageFolder(root=celeba_root, transform=transform)
 
 #Dataloader
@@ -24,7 +24,7 @@ batch = 16
 all_indices = list(range(len(dataset)))
 random_indices = random.sample(all_indices, subset_size)
 subset = Subset(dataset, random_indices)
-dataloader = DataLoader(subset, batch_size=batch, shuffle=True, num_workers=2, pin_memory=True)
+dataloader = DataLoader(subset, batch_size=batch, shuffle=True, num_workers=2, pin_memory=True, persistent_workers=True)
 
 imgs, _ = next(iter(dataloader))
 print(imgs.shape == (batch, 3, 64, 64))
@@ -104,7 +104,7 @@ class ResBlock(nn.Module):
     def forward(self, x, temb):
         temb_proj = self.temb_proj(temb)[:, :, None, None]  # [N,C,1,1]
         feat = self.first_conv(x)         # [N,C,H,W]
-        feat = feat + temb_proj           # inject time
+        feat = feat + temb_proj           
         feat = self.act(feat)             
         feat = self.second_conv(feat)
         return feat + self.skip(x)
@@ -268,14 +268,17 @@ class UNet(nn.Module):
         self.stem = nn.Conv2d(in_ch, base, 3, padding=1)
 
         # Encoder
-        self.down0 = DownsampleBlock(base,   base,   temb_dim, is_last=False)
-        self.down1 = DownsampleBlock(base*2, base*2, temb_dim, is_last=False)
-        self.down2 = DownsampleBlock(base*4, base*4, temb_dim, is_last=True)  
+        self.down0 = DownsampleBlock(base,     base*2, temb_dim, is_last=False)  # H -> H/2
+        self.down1 = DownsampleBlock(base*2,   base*4, temb_dim, is_last=False)  # H/2 -> H/4
+        self.down2 = DownsampleBlock(base*4,   base*8, temb_dim, is_last=False)  # H/4 -> H/8
+        self.down3 = DownsampleBlock(base*8,   base*8, temb_dim, is_last=True)   # keep H/8, deepen features
 
         # Bottleneck
-        self.mid = BottleneckBlock(channels=base*4, temb_dim=temb_dim, use_attention=True)
+        self.mid = BottleneckBlock(channels=base*8, temb_dim=temb_dim, use_attention=True)
 
         # Decoder
+        self.up3 = UpsampleBlock(in_channels=base*8, skip_channels=base*8, out_channels=base*4,   temb_dim=temb_dim, use_attention=True)
+        self.up2 = UpsampleBlock(in_channels=base*4, skip_channels=base*4, out_channels=base*4,   temb_dim=temb_dim, use_attention=True)
         self.up1 = UpsampleBlock(in_channels=base*4, skip_channels=base*2, out_channels=base*2,   temb_dim=temb_dim, use_attention=True)
         self.up0 = UpsampleBlock(in_channels=base*2,   skip_channels=base,   out_channels=base,   temb_dim=temb_dim, use_attention=False)
 
@@ -286,15 +289,16 @@ class UNet(nn.Module):
         
         temb = self.time_mlp(t)  
         x = self.stem(x)
-
+        x_stem = x
         x, s0 = self.down0(x, temb)   # x: base*2, H/2
         x, s1 = self.down1(x, temb)   # x: base*4, H/4
         x, s2 = self.down2(x, temb)   # x: base*4 (no further down), H/4
-
+        x, s3 = self.down3(x, temb)
         x = self.mid(x, temb)
-
-        x = self.up1(x, s1, temb)     # -> base
-        x = self.up0(x, s0, temb)     # -> base
+        x = self.up3(x, s3, temb)
+        x = self.up2(x, s1, temb)
+        x = self.up1(x, s0, temb)     # -> base
+        x = self.up0(x, x_stem, temb)     # -> base
 
         return self.out(x) 
 mse = nn.MSELoss()
@@ -308,18 +312,17 @@ def diffusion_loss_vpred(model, x0, T, alphas, alphas_cumprod):
     t = _rand_t(N, T, x0.device)
     x_t, eps = q_sample(x0, t, alphas_cumprod)  # returns x_t, ε
 
-    a_t = alphas[t].view(-1,1,1,1)
     a_bar = alphas_cumprod[t].view(-1,1,1,1)
     # v target
-    v_target = a_t.sqrt() * eps - (1.0 - a_bar).sqrt() * x0
+    v_target = a_bar.sqrt() * eps - (1.0 - a_bar).sqrt() * x0
 
     v_pred = model(x_t, t)
     return mse(v_pred, v_target)
 def v_to_eps(v_pred, x_t, t, alphas, alphas_cumprod):
-    a_t = alphas[t].view(-1,1,1,1)
+    
     a_bar = alphas_cumprod[t].view(-1,1,1,1)
     # ε̂ = (v̂ + sqrt(1−ᾱ)*x_t) / sqrt(α_t)
-    return (v_pred + (1.0 - a_bar).sqrt() * x_t) / a_t.sqrt()
+    return a_bar.sqrt() * v_pred + (1.0 - a_bar).sqrt() * x_t
 class EMA:
     def __init__(self, model, decay=0.999):
         self.decay = decay
