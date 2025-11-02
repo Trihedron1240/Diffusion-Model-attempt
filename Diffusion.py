@@ -19,7 +19,9 @@ celeba_root = "/kaggle/input/celeba-dataset"
 dataset = datasets.ImageFolder(root=celeba_root, transform=transform)
 
 #Dataloader
-subset_size = 10000
+subset_size = min(10000, len(dataset))
+if subset_size == 0:
+    raise RuntimeError("Dataset is empty")
 batch = 16
 all_indices = list(range(len(dataset)))
 random_indices = random.sample(all_indices, subset_size)
@@ -290,15 +292,15 @@ class UNet(nn.Module):
         temb = self.time_mlp(t)  
         x = self.stem(x)
         x_stem = x
-        x, s0 = self.down0(x, temb)   # x: base*2, H/2
-        x, s1 = self.down1(x, temb)   # x: base*4, H/4
-        x, s2 = self.down2(x, temb)   # x: base*4 (no further down), H/4
-        x, s3 = self.down3(x, temb)
-        x = self.mid(x, temb)
-        x = self.up3(x, s3, temb)
-        x = self.up2(x, s1, temb)
-        x = self.up1(x, s0, temb)     # -> base
-        x = self.up0(x, x_stem, temb)     # -> base
+        x, s0 = self.down0(x, temb)   # x: H/2
+        x, s1 = self.down1(x, temb)   # x: H/4
+        x, s2 = self.down2(x, temb)   # x: H/8
+        x, s3 = self.down3(x, temb)   # x: H/8
+        x = self.mid(x, temb)           # H/8
+        x = self.up2(x, s2, temb)       # H/4
+        x = self.up1(x, s1, temb)       # H/2
+        x = self.up0(x, s0, temb)       # H
+        out = self.out(x)    # -> base
 
         return self.out(x) 
 mse = nn.MSELoss()
