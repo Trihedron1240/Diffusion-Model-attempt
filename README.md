@@ -1,5 +1,12 @@
 # Diffusion-Model-attempt
-This is my first attempt at building a diffusion model from scratch in PyTorch — trained on CelebA to generate 64×64 faces.
-An unconditional DDPM (denoising diffusion probabilistic model) with a UNet backbone, trained with ε-prediction and sampled using ancestral DDPM steps.
 
- Note: I am unable to train this model fully yet due to the limitations in computing resources i currently have available
+First attempt building a diffusion model from scratch in PyTorch. Trained on CelebA at **64×64** resolution.
+
+- **Architecture:** UNet with time embeddings, skip connections, GroupNorm, bottleneck self-attention.
+- **Objective:** **v-prediction** (predict v from x_t and t), with optional SNR weighting.
+- **Noise schedule:** cosine β schedule (T=1000) with precomputed α, ᾱ.
+- **Training:** AMP (autocast + GradScaler), AdamW, EMA optional.
+- **Sampling:** DDPM ancestral steps (DDIM available), correct v→ε/x₀ conversions.
+- **Status:** unconditional generation (no text/label conditioning).
+
+> If you’re reading an older commit: earlier versions used ε-prediction; recent commits switched to v-prediction for improved stability/sharpness at low noise.
