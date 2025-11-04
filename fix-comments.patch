@@ -1,0 +1,108 @@
+@@
+-# Cumprod = cumulative product
+-# 1e-4, 2e-2 good for diffusion, start small, end with bigger varience
++# Cumprod = cumulative product
++# NOTE: Older DDPMs often used a linear β schedule (e.g., 1e-4 → 2e-2).
++# This code uses a **cosine ᾱ schedule** (Nichol & Dhariwal), from which α_t and β_t are derived.
++# The linear-β guidance doesn’t apply here.
+
+@@
+-def make_betas_schedule_cosine(T, s=0.008, device=None, eps=1e-5): # changed: switched to cosine schedule
++def make_betas_schedule_cosine(T, s=0.008, device=None, eps=1e-5):  # Cosine ᾱ schedule
+     # ᾱ(t) = cos^2(((t/T)+s)/(1+s) * π/2)
+     steps = torch.arange(T+1, device=device, dtype=torch.float32)
+     t = steps / T
+     alphas_cumprod = torch.cos(((t + s) / (1 + s)) * torch.pi * 0.5) ** 2
+     alphas_cumprod = alphas_cumprod / alphas_cumprod[0]  # normalize to 1 at t=0
+@@
+ class AttentionBlock(nn.Module):
+@@
+-        assert channels % num_heads == 0, 'channels must be %  /by num_heads' # saving time in debugging if values are wrong
++        assert channels % num_heads == 0, "channels must be divisible by num_heads"  # early shape guard
+
+@@
+ class UpSample2d(nn.Module):
+-    def __init__(self, in_channels, out_channels = None): # out_channels = none so that if its called and not set it can be changed to in_channels
++    def __init__(self, in_channels, out_channels = None):  # out_channels defaults to in_channels
+         super().__init__()
+         out_channels = out_channels or in_channels
+-        self.upsample = nn.Upsample(scale_factor=2, mode='nearest') # best mode for feature mapping in diffusion, upsamples by 2*
++        self.upsample = nn.Upsample(scale_factor=2, mode='nearest')  # commonly used in diffusion UNets; upsamples ×2
+         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
+     def forward(self, x):
+         x = self.upsample(x)
+         return self.conv(x)
+
+@@
+ class UpsampleBlock(nn.Module):
+@@
+-        if x.shape[-2:] != skip.shape[-2:]: # If shapes are off by 1 pixel or so, then it needs to be fixed to concat them
++        if x.shape[-2:] != skip.shape[-2:]:  # Handle off-by-one spatial mismatches before concat
+             sh, sw = skip.shape[-2:]
+             xh, xw = x.shape[-2:]
+             dh, dw = (sh - xh) // 2, (sw - xw) // 2
+             skip = skip[..., dh:dh+xh, dw:dw+xw]
+@@
+ class OutHead(nn.Module):
+@@
+-        self.norm = nn.GroupNorm(32, in_channels)
++        self.norm = nn.GroupNorm(32, in_channels)  # NOTE: groups must divide channels; base=64 is safe here
+         self.act  = nn.SiLU()
+         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
+-        #zero-init for stable start
++        # Zero-init for a stable start; head will “warm up” during training
+         nn.init.zeros_(self.conv.weight)
+         nn.init.zeros_(self.conv.bias)
+
+@@
+ class UNet(nn.Module):
+@@
+-        x, _  = self.down3(x, temb)   # H/8   # x: H/8 _ is not needed, just x
++        x, _  = self.down3(x, temb)   # keep H/8; skip unused
+         x = self.mid(x, temb)           # H/8
+         x = self.up2(x, s2, temb)       # H/4
+         x = self.up1(x, s1, temb)       # H/2
+         x = self.up0(x, s0, temb)       # H
+-        out = self.out(x)
++        out = self.out(x)               # -> [N, out_ch, H, W]
+
+         return out
+@@
+ def v_to_eps(v_pred, x_t, t, alphas, alphas_cumprod):
+-    
+-    a_bar = alphas_cumprod[t].view(-1,1,1,1)
+-    # ε̂ = (v̂ + sqrt(1−ᾱ)*x_t) / sqrt(α_t)
++    # For v-pred: v = √ᾱ * ε − √(1−ᾱ) * x0  ⇒  ε̂ = √ᾱ * v̂ + √(1−ᾱ) * x_t
++    a_bar = alphas_cumprod[t].view(-1,1,1,1)
+     return a_bar.sqrt() * v_pred + (1.0 - a_bar).sqrt() * x_t
+@@
+-# buffers
+-sqrt_alphas      = torch.sqrt(alphas)
+-sqrt_one_minus_c = torch.sqrt(1.0 - alphas_cumprod)
+-sqrt_recip_alph  = torch.sqrt(1.0 / alphas)
+-posterior_var    = betas 
++# Buffers (helper quantities; some are illustrative in this script)
++sqrt_alphas       = torch.sqrt(alphas)
++sqrt_one_minus_c  = torch.sqrt(1.0 - alphas_cumprod)  # actually √(1−ᾱ_t)
++sqrt_recip_alph   = torch.sqrt(1.0 / alphas)
++posterior_var     = betas
+@@
+-    # NEW: precompute a_bar_prev
++    # Precompute ᾱ_{t-1} (ᾱ_prev) for posterior variance
+     alphas_cumprod_prev = torch.cat(
+         [torch.tensor([1.0], device=device, dtype=alphas_cumprod.dtype),
+          alphas_cumprod[:-1]], dim=0
+     )
+@@
+-        # save a checkpoint per  x epochs
++        # Save a checkpoint every epoch
+         ckpt = {
+             "net": net.state_dict(),
+             "ema": ema.shadow,
+             "opt": optimizer.state_dict(),
+             "step": global_step,
+             "epoch": epoch,
+             "betas": betas,
+             "alphas": alphas,
+             "alphas_cumprod": alphas_cumprod,
+         }
