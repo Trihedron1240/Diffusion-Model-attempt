@@ -32,7 +32,7 @@ imgs, _ = next(iter(dataloader))
 print(imgs.shape == (batch, 3, 64, 64))
 
 # Cumprod = cumulative product
-# 1e-4, 2e-2 good for diffusion, start small, end with bigger varience
+# NOTE: Using a cosine schedule (Nichol # 1e-4, 2e-2 good for diffusion, start small, end with bigger varience Dhariwal); the old linear-beta note does not apply.
 
 # beta_schedule to define variables for the math to come
 
@@ -133,7 +133,7 @@ class AttentionBlock(nn.Module):
     def __init__(self, channels: int, group_num: int = 32, num_heads: int = 4, attention_dropout: float = 0.0,
                   proj_dropout: float = 0.0):
         super().__init__()
-        assert channels % num_heads == 0, 'channels must be %  /by num_heads' # saving time in debugging if values are wrong
+        assert channels % num_heads == 0, 'channels must be divisible by num_heads' # saving time in debugging if values are wrong
         self.attention_dropout = nn.Dropout(attention_dropout)
         self.proj_dropout = nn.Dropout(proj_dropout)
         self.channels = channels
@@ -192,10 +192,10 @@ class BottleneckBlock(nn.Module):
         return x
 # Upsample2d
 class UpSample2d(nn.Module):
-    def __init__(self, in_channels, out_channels = None): # out_channels = none so that if its called and not set it can be changed to in_channels
+    def __init__(self, in_channels, out_channels = None): # out_channels defaults to in_channels
         super().__init__()
         out_channels = out_channels or in_channels
-        self.upsample = nn.Upsample(scale_factor=2, mode='nearest') # best mode for feature mapping in diffusion, upsamples by 2*
+        self.upsample = nn.Upsample(scale_factor=2, mode='nearest') # commonly used in diffusion UNets; upsamples x2
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
     def forward(self, x):
         x = self.upsample(x)
@@ -217,7 +217,7 @@ class UpsampleBlock(nn.Module):
             self.attention = AttentionBlock(out_channels)
     def forward(self, x, skip, temb):
         x = self.upsample(x)
-        if x.shape[-2:] != skip.shape[-2:]: # If shapes are off by 1 pixel or so, then it needs to be fixed to concat them
+        if x.shape[-2:] != skip.shape[-2:]: # Handle off-by-one spatial mismatches before concat
             sh, sw = skip.shape[-2:]
             xh, xw = x.shape[-2:]
             dh, dw = (sh - xh) // 2, (sw - xw) // 2
@@ -275,7 +275,7 @@ class UNet(nn.Module):
         x, s0 = self.down0(x, temb)   # x: H/2
         x, s1 = self.down1(x, temb)   # x: H/4
         x, s2 = self.down2(x, temb)
-        x, _  = self.down3(x, temb)   # H/8   # x: H/8 _ is not needed, just x
+        x, _  = self.down3(x, temb)   # keep H/8; skip unused
         x = self.mid(x, temb)           # H/8
         x = self.up2(x, s2, temb)       # H/4
         x = self.up1(x, s1, temb)       # H/2
@@ -303,7 +303,7 @@ def diffusion_loss_vpred(model, x0, T, alphas, alphas_cumprod):
 def v_to_eps(v_pred, x_t, t, alphas, alphas_cumprod):
     
     a_bar = alphas_cumprod[t].view(-1,1,1,1)
-    # ε̂ = (v̂ + sqrt(1−ᾱ)*x_t) / sqrt(α_t)
+    # For v-pred: eps_hat = sqrt(a_bar) * v_hat + sqrt(1 - a_bar) * x_t
     return a_bar.sqrt() * v_pred + (1.0 - a_bar).sqrt() * x_t
 class EMA:
     def __init__(self, model, decay=0.999):
@@ -361,7 +361,7 @@ def ddpm_sample(model, shape, T, betas, alphas, alphas_cumprod, device):
     N, C, H, W = shape
     x_t = torch.randn(N, C, H, W, device=device)
 
-    # NEW: precompute a_bar_prev
+    # Precompute a_bar_prev (alpha_bar at t-1) for posterior variance
     alphas_cumprod_prev = torch.cat(
         [torch.tensor([1.0], device=device, dtype=alphas_cumprod.dtype),
          alphas_cumprod[:-1]], dim=0
@@ -409,7 +409,7 @@ for epoch in range(1, epochs+1):
             print(f"epoch {epoch} step {global_step}  loss {loss.item():.4f}")
         global_step += 1
     if (epoch+1) % 1 == 0:
-        # save a checkpoint per  x epochs
+        # Save a checkpoint every epoch
         ckpt = {
             "net": net.state_dict(),
             "ema": ema.shadow,
